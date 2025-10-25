@@ -2,7 +2,7 @@
 
 ## Context
 
-[Est'Immo](https://qxzjy-streamlit-housing-prices.hf.space/) is a minimalist platform designed to help professionals and individuals estimate the value of a property by leveraging historical transaction data and machine learning.
+[Est'Immo](https://qxzjy-streamlit-housing-prices.hf.space/) is an app designed to help professionals and individuals estimate the value of a property by leveraging historical transaction data and machine learning.
 
 In a tight market, it is important to sell at the right price:
 - too low : the seller loses money.
