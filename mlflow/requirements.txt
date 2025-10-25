@@ -1,0 +1,9 @@
+boto3
+pandas 
+gunicorn 
+scikit-learn==1.6.1
+xgboost
+mlflow==2.22.1
+psycopg2-binary
+jupyter
+openpyxl

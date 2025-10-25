@@ -1,0 +1,15 @@
+apache-airflow-providers-postgres[amazon]
+apache-airflow-providers-common-sql
+psycopg2-binary
+pydantic
+pandas
+mlflow
+pytest
+scikit-learn
+xgboost
+evidently
+numpy
+boto3
+requests
+apache-airflow-providers-ssh
+apache-airflow-providers-amazon

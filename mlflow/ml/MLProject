@@ -1,0 +1,15 @@
+name: mlflow-housing_prices
+docker_env:
+  image: mlflow-server
+  volumes: ["$(pwd):/home/app"]
+  environment:
+    [
+      "MLFLOW_TRACKING_URI",
+      "MLFLOW_EXPERIMENT_NAME",
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "DB_URI"
+    ]
+entry_points:
+  main:
+    command: "python train.py"
