@@ -64,7 +64,7 @@ Runs whenever a data drift is detected or if requested by the data team. The sta
 
 ## Sources
 
-[Machine Learning](https://github.com/qxzjy/housing-prices-ml/) (Repository)
+[ML model and CI/CD pipeline](https://github.com/qxzjy/housing-prices-ml/) (Repository)
 
 ## Web pages
 
