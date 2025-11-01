@@ -40,15 +40,18 @@ class PredictionFeatures(BaseModel):
     distance_to_center: float
 
 @app.post("/predict", tags=["Machine-Learning"])
-async def predict(predictionFeatures: PredictionFeatures):
+async def predict(predictionFeatures: dict[str, int | float]) -> dict[str, float]:
     """
-    Prediction for one observation. Endpoint will return a dictionnary like this:
+    Prediction of the price of a house based on its characteristics,for one observation.
+    
+    Args:
+        predictionFeatures (dict[str, int | float]): One observation of house to predict his price.
+    
+    Returns:
+        dict[str, float]: House price predicted within the format ```{'prediction': PREDICTION_VALUE}```
 
-    ```
-    {'prediction': PREDICTION_VALUE}
-    ```
-
-    You need to give this endpoint all columns values as dictionnary, or form data.
+    Raises:
+        HTTPException: If any error occurs related to the MLflow server.
     """
     try:
         # Read data
@@ -67,10 +70,19 @@ async def predict(predictionFeatures: PredictionFeatures):
         raise HTTPException(status_code=500, detail=str(e))
     
 @app.post("/batch-predict", tags=["Machine-Learning"])
-async def batch_predict(file: UploadFile = File(...)):
+async def batch_predict(file: UploadFile = File(...)) -> dict:
     """
     Make prediction on a batch of observation. This endpoint accepts only **csv files** containing
     all the trained columns WITHOUT the target variable.
+    
+    Args:
+        file (UploadFile): Batch of observation of houses to predict their price, CSV files.
+    
+    Returns:
+        dict[str, float]: Houses price predicted within the format ```{'prediction': PREDICTION_VALUE}```
+
+    Raises:
+        HTTPException: If any error occurs related to the MLflow server.
     """
     try:
         # Read file
