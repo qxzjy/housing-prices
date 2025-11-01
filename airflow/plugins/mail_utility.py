@@ -4,8 +4,27 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 class SimpleMailSender():
+    """
+    A minimalist utilitary class to send email.
 
-    def send_email(sender, receiver, subject, body):
+    Methods: 
+        send_email(sender, receiver, subject, body):
+            Send an email using GMail SMTP.
+    """
+
+    def send_email(sender: str, receiver: str, subject: str, body: str) -> None:
+        """
+        Send an email using GMail SMTP.
+
+        Args:
+            sender (str): Email sender address
+            receiver (str): Email receiver address
+            subject (str): Email subject
+            body (str): Email body
+            
+        Raises:
+            Exception: If any error occurs related to the SMTP server (login, sending email).
+        """
 
         # Set email sender, recipient and subject
         msg = MIMEMultipart()
@@ -22,12 +41,12 @@ class SimpleMailSender():
             server.starttls()
             server.login(sender, Variable.get("APP_PASSWORD"))
 
-            # Envoi du mail
+            # Sending email
             text = msg.as_string()
             server.sendmail(sender, receiver, text)
 
-            print("E-mail envoyé avec succès!")
+            print("Email sent successfully !")
         except Exception as e:
-            print(f"Erreur lors de l'envoi : {e}")
+            print(f"Error while sending : {e}")
         finally:
             server.quit()
