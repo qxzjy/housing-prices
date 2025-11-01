@@ -41,35 +41,43 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
 
     # Step 1: Poll Jenkins Job Status
     @task
-    def poll_jenkins_job():
+    def poll_jenkins_job() -> bool:
         """Poll Jenkins for the job status and check for successful build."""
+        try:
+            # Step 1.1: Get the latest build number from the job API
+            job_url = f"{JENKINS_URL}/job/{JENKINS_JOB_NAME}/api/json"
+            response = requests.get(job_url, auth=(JENKINS_USER, JENKINS_TOKEN), timeout=30)
+            response.raise_for_status()
 
-        # Step 1.1: Get the latest build number from the job API
-        job_url = f"{JENKINS_URL}/job/{JENKINS_JOB_NAME}/api/json"
-        response = requests.get(job_url, auth=(JENKINS_USER, JENKINS_TOKEN))
-        if response.status_code != 200:
-            raise Exception(f"Failed to query Jenkins API: {response.status_code}")
+            job_info = response.json()
+            latest_build_number = job_info.get('lastBuild', {}).get('number')
+            if not latest_build_number:
+                raise ValueError("No build number found in Jenkins response")
 
-        job_info = response.json()
-        latest_build_number = job_info['lastBuild']['number']
+            # Step 1.2: Poll the latest build's status
+            build_url = f"{JENKINS_URL}/job/{JENKINS_JOB_NAME}/{latest_build_number}/api/json"
 
-        # Step 1.2: Poll the latest build's status
-        build_url = f"{JENKINS_URL}/job/{JENKINS_JOB_NAME}/{latest_build_number}/api/json"
-
-        while True:
-            response = requests.get(build_url, auth=(JENKINS_USER, JENKINS_TOKEN))
-            if response.status_code == 200:
-                build_info = response.json()
-                if not build_info['building']:  # Build is finished
-                    if build_info['result'] == 'SUCCESS':
-                        print("Jenkins build successful!")
-                        return True
-                    else:
-                        raise Exception("Jenkins build failed!")
-            else:
-                raise Exception(f"Failed to query Jenkins API: {response.status_code}")
-            
-            time.sleep(30)  # Poll every 30 seconds
+            while True:
+                try:
+                    response = requests.get(build_url, auth=(JENKINS_USER, JENKINS_TOKEN), timeout=30)
+                    response.raise_for_status()
+                    build_info = response.json()
+                    
+                    if not build_info['building']:  # Build is finished
+                        if build_info['result'] == 'SUCCESS':
+                            print("Jenkins build successful!")
+                            return True
+                        else:
+                            raise Exception(f"Jenkins build failed with result: {build_info['result']}")
+                    
+                    time.sleep(30)  # Poll every 30 seconds
+                except requests.RequestException as e:
+                    raise Exception(f"Failed to poll build status: {str(e)}")
+                
+        except requests.RequestException as e:
+            raise Exception(f"Failed to query Jenkins API: {str(e)}")
+        except (KeyError, ValueError) as e:
+            raise Exception(f"Invalid Jenkins API response: {str(e)}")
 
     # Step 2: Create EC2 Instance Using EC2 Operator
     create_ec2_instance = EC2CreateInstanceOperator(
@@ -78,7 +86,7 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
         region_name=REGION_NAME,  
         max_count=1,
         min_count=1,
-        config={  # Dictionary for arbitrary parameters to the boto3 `run_instances` call
+        config={
             "InstanceType": INSTANCE_TYPE,
             "KeyName": KEY_PAIR_NAME,  
             "NetworkInterfaces": [
@@ -97,94 +105,81 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
                 }
             ]
         },
-        wait_for_completion=True,  # Wait for the instance to be running before proceeding
+        wait_for_completion=True,
     )
     
     # Step 3: Use EC2 Sensor to Check if Instance is Running
     @task
-    def check_ec2_status(instance_id):
-        """Check if the EC2 instance has passed both status checks (2/2 checks passed)."""
-        
-        ec2_client = boto3.client(
-            'ec2', 
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=REGION_NAME
-        )  
-        passed_checks = False
-        
-        while not passed_checks:
-            # Get the instance status
-            response = ec2_client.describe_instance_status(InstanceIds=instance_id)
+    def check_ec2_status(instance_id: list[str]) -> bool:
+        """Check if the EC2 instance has passed both status checks."""
+        try:
+            ec2_client = boto3.client(
+                'ec2', 
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                region_name=REGION_NAME
+            )  
+            passed_checks = False
+            
+            while not passed_checks:
+                response = ec2_client.describe_instance_status(InstanceIds=instance_id)
 
-            # Check if there is any status information returned
-            if response['InstanceStatuses']:
-                instance_status = response['InstanceStatuses'][0]
-
-                system_status = instance_status['SystemStatus']['Status']
-                instance_status_check = instance_status['InstanceStatus']['Status']
+                if response['InstanceStatuses']:
+                    instance_status = response['InstanceStatuses'][0]
+                    system_status = instance_status['SystemStatus']['Status']
+                    instance_status_check = instance_status['InstanceStatus']['Status']
+                    
+                    print(f"System Status: {system_status}, Instance Status: {instance_status_check}")
+                    
+                    if system_status == 'ok' and instance_status_check == 'ok':
+                        print(f"Instance {instance_id} has passed 2/2 status checks.")
+                        return True
                 
-                # Log the current status
-                print(f"System Status: {system_status}, Instance Status: {instance_status_check}")
-                
-                # Check if both status checks are passed
-                if system_status == 'ok' and instance_status_check == 'ok':
-                    print(f"Instance {instance_id} has passed 2/2 status checks.")
-                    passed_checks = True
-                else:
-                    print(f"Waiting for instance {instance_id} to pass 2/2 status checks...")
-            else:
-                print(f"No status available for instance {instance_id} yet. Waiting...")
+                time.sleep(15)
 
-            # Wait before polling again
-            time.sleep(15)
+        except boto3.exceptions.Boto3Error as e:
+            raise Exception(f"AWS API error: {str(e)}")
 
-        return True
-
-    # Step 4: Define Run Training as an @task to Get EC2 Public IP
     @task
-    def get_ec2_public_ip(instance_id):
+    def get_ec2_public_ip(instance_id: list[str]) -> str:
         """Retrieve the EC2 instance public IP for SSH."""
-    
-        # Initialize the EC2 resource using boto3 with credentials from Airflow connection
-        ec2_client = boto3.resource(
-            'ec2', 
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=REGION_NAME
-        )
+        try:
+            ec2_client = boto3.resource(
+                'ec2', 
+                aws_access_key_id=AWS_ACCESS_KEY_ID,
+                aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+                region_name=REGION_NAME
+            )
 
-        # Access EC2 instance by ID
-        instance = ec2_client.Instance(instance_id[0])
+            instance = ec2_client.Instance(instance_id[0])
+            instance.wait_until_running()
+            instance.reload()
 
-        # Wait for the instance to be running
-        instance.wait_until_running()
-        instance.reload()
+            public_ip = instance.public_ip_address
+            if not public_ip:
+                raise ValueError("No public IP address assigned to instance")
+                
+            print(f"Public IP of EC2 Instance: {public_ip}")
+            return public_ip
 
-        # Get the instance's public IP
-        public_ip = instance.public_ip_address
-        print(f"Public IP of EC2 Instance: {public_ip}")
-
-        # Return the public IP for the SSH task
-        return public_ip
+        except (boto3.exceptions.Boto3Error, ValueError) as e:
+            raise Exception(f"Failed to get EC2 instance IP: {str(e)}")
     
     @task
-    def run_training_via_paramiko(public_ip):
+    def run_training_via_paramiko(public_ip: str) -> None:
         """Use Paramiko to SSH into the EC2 instance and run ML training."""
-
-        print("PUBLIC IP:",public_ip)
-        # Initialize SSH client
         ssh_client = paramiko.SSHClient()
-        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # Automatically add unknown hosts
-
-        # Load private key
-        private_key = paramiko.RSAKey.from_private_key_file(KEY_PATH)
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
         try:
-            # Establish an SSH connection
-            ssh_client.connect(hostname=public_ip, username="ubuntu", pkey=private_key)
+            private_key = paramiko.RSAKey.from_private_key_file(KEY_PATH)
+            ssh_client.connect(
+                hostname=public_ip, 
+                username="ubuntu", 
+                pkey=private_key,
+                timeout=60
+            )
 
-            # Export environment variables 
             command = f'''
             export PATH=$PATH:/home/ubuntu/.local/bin && \
             export MLFLOW_TRACKING_URI="{MLFLOW_TRACKING_URI}" && \
@@ -195,23 +190,23 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
             mlflow run https://github.com/qxzjy/housing-prices-ml --build-image
             '''
             
-            # Run your training command via SSH
-            stdin, stdout, stderr = ssh_client.exec_command(command)
+            stdin, stdout, stderr = ssh_client.exec_command(command, timeout=3600)
             
-            # Print the output for debugging
             for line in stdout:
                 print(line.strip())
             for line in stderr:
                 print(line.strip())
 
+            if stdout.channel.recv_exit_status() != 0:
+                raise Exception("Training command failed")
+
+        except paramiko.SSHException as e:
+            raise Exception(f"SSH connection error: {str(e)}")
         except Exception as e:
-            print(f"Error occurred during SSH: {str(e)}")
-            raise
+            raise Exception(f"Training execution error: {str(e)}")
         finally:
-            # Close the SSH connection
             ssh_client.close()
             
-    #Step 6: Terminate EC2 Instance
     terminate_instance = EC2TerminateInstanceOperator(
         task_id="terminate_ec2_instance",
         instance_ids="{{ task_instance.xcom_pull(task_ids='create_ec2_instance', key='return_value')[0] }}",

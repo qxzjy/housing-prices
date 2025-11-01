@@ -12,53 +12,109 @@ from evidently.metrics import *
 from evidently.presets import *
 from datetime import datetime
 from mail_utility import SimpleMailSender
+import logging
+from typing import Any, Dict, Optional
 
-def _detect_data_drift(**context):
-    # Connect to PostgreSQL and get data
-    postgres_hook = PostgresHook(postgres_conn_id="postgres_default")
-    engine = postgres_hook.get_sqlalchemy_engine()
-    reference_data = pd.read_sql("SELECT * FROM {} WHERE id <= 500".format(Variable.get("TABLE_HOUSING_PRICES")), engine, index_col="id")
-    current_data = pd.read_sql("SELECT * FROM {}".format(Variable.get("TABLE_HOUSING_PRICES")), engine, index_col="id")
+def _detect_data_drift(**context: Dict[str, Any]) -> str:
+    """
+    Detect data drift between reference and current housing prices stored in Postgres,
+    create an Evidently report and dashboard run, and branch depending on the test result.
 
-    # Connect to Evidently Cloud
-    ws = CloudWorkspace(
-    token=Variable.get("EVIDENTLY_TOKEN"),
-    url="https://app.evidently.cloud")
+    Returns:
+        "data_drift_detected" if a drift test failed, otherwise "no_data_drift_detected".
 
-    # Retrieve project
-    project = ws.get_project(Variable.get("EVIDENTLY_PROJECT_ID"))
+    Raises:
+        Exception: re-raises unexpected exceptions after logging and pushing error info to XCom.
+    """
+    logger = logging.getLogger("airflow.task")
+    ti = context.get("task_instance") or context.get("ti")
 
-    # Define report
-    data_drift_report = Report(
-        metrics=[
-            DataDriftPreset()
-        ],
-        include_tests=True
-    )
+    try:
+        # Connect to PostgreSQL and get data
+        postgres_hook = PostgresHook(postgres_conn_id="postgres_default")
+        engine = postgres_hook.get_sqlalchemy_engine()
+        table_name = Variable.get("TABLE_HOUSING_PRICES")
+        reference_query = f"SELECT * FROM {table_name} WHERE id <= 500"
+        current_query = f"SELECT * FROM {table_name}"
 
-    # Create report
-    report = data_drift_report.run(current_data=current_data, reference_data=reference_data)
-    dashboard = ws.add_run(project.id, report)
+        reference_data: pd.DataFrame = pd.read_sql(reference_query, engine, index_col="id")
+        current_data: pd.DataFrame = pd.read_sql(current_query, engine, index_col="id")
 
-    report_dict = report.dict()
-    dashboard_url = dashboard.dict()["url"]
+        # Connect to Evidently Cloud
+        ws = CloudWorkspace(token=Variable.get("EVIDENTLY_TOKEN"), url="https://app.evidently.cloud")
 
-    # Check if there's data drift
-    if report_dict["tests"][0]["status"]=="FAIL":
-        context["task_instance"].xcom_push(key="dashboard_url", value=dashboard_url)
+        # Retrieve project
+        project = ws.get_project(Variable.get("EVIDENTLY_PROJECT_ID"))
 
-        return "data_drift_detected"
-    else:
-        return "no_data_drift_detected"
-    
+        # Define report
+        data_drift_report = Report(metrics=[DataDriftPreset()], include_tests=True)
 
-def _send_notification(**context):
-    # Filename from the context
-    dashboard_url = context["task_instance"].xcom_pull(key="dashboard_url")
+        # Create report
+        report = data_drift_report.run(current_data=current_data, reference_data=reference_data)
+        dashboard = ws.add_run(project.id, report)
 
-    body = f"Un drift de données a été détecté, un ré-entrainement du modèle a été déclenché.\n\nPour plus de détails, consulter le dashboard : {dashboard_url}"  
+        report_dict = report.dict()
+        dashboard_url: Optional[str] = dashboard.dict().get("url")
 
-    SimpleMailSender.send_email(Variable.get("SENDER_EMAIL"), Variable.get("RECEIVER_EMAIL"), "Détection d'un drift de données !", body)
+        # Defensive check for test results
+        tests = report_dict.get("tests", [])
+        if not tests:
+            logger.warning("Evidently report contains no tests; treating as no drift.")
+            return "no_data_drift_detected"
+
+        first_test_status = tests[0].get("status")
+        if first_test_status == "FAIL":
+            if ti:
+                ti.xcom_push(key="dashboard_url", value=dashboard_url)
+            logger.info("Data drift detected; dashboard created at: %s", dashboard_url)
+            return "data_drift_detected"
+        else:
+            logger.info("No data drift detected.")
+            return "no_data_drift_detected"
+
+    except Exception as exc:
+        # Push error info for downstream debugging and re-raise so task fails
+        logger.exception("Error while detecting data drift: %s", exc)
+        if ti:
+            ti.xcom_push(key="monitoring_error", value=str(exc))
+        raise
+
+
+def _send_notification(**context: Dict[str, Any]) -> None:
+    """
+    Send an email notification when data drift is detected. Expects the dashboard URL
+    to be available in XCom under key 'dashboard_url'. Logs and raises on errors.
+    """
+    logger = logging.getLogger("airflow.task")
+    ti = context.get("task_instance") or context.get("ti")
+
+    try:
+        dashboard_url: Optional[str] = None
+        if ti:
+            dashboard_url = ti.xcom_pull(key="dashboard_url")
+
+        if not dashboard_url:
+            logger.warning("No dashboard URL found in XCom; sending notification without link.")
+            body = "Un drift de données a été détecté, un ré-entrainement du modèle a été déclenché.\n\nAucun dashboard n'est disponible."
+        else:
+            body = (
+                "Un drift de données a été détecté, un ré-entrainement du modèle a été déclenché.\n\n"
+                f"Pour plus de détails, consulter le dashboard : {dashboard_url}"
+            )
+
+        SimpleMailSender.send_email(
+            Variable.get("SENDER_EMAIL"),
+            Variable.get("RECEIVER_EMAIL"),
+            "Détection d'un drift de données !",
+            body,
+        )
+        logger.info("Notification email sent to %s", Variable.get("RECEIVER_EMAIL"))
+
+    except Exception as exc:
+        logger.exception("Failed to send notification email: %s", exc)
+        if ti:
+            ti.xcom_push(key="notification_error", value=str(exc))
+        raise
 
 
 with DAG(dag_id="monitoring", start_date=datetime(2025, 8, 28), schedule_interval=None, catchup=False) as dag:
@@ -76,7 +132,8 @@ with DAG(dag_id="monitoring", start_date=datetime(2025, 8, 28), schedule_interva
 
     send_notification = PythonOperator(
         task_id="send_notification",
-        python_callable=_send_notification
+        python_callable=_send_notification,
+        provide_context=True
     )
 
     trigger_training_ec2 = TriggerDagRunOperator(
