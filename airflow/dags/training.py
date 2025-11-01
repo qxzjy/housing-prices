@@ -42,7 +42,17 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
     # Step 1: Poll Jenkins Job Status
     @task
     def poll_jenkins_job() -> bool:
-        """Poll Jenkins for the job status and check for successful build."""
+        """
+        Poll Jenkins for the job status and check for successful build.
+
+        Returns:
+            bool: Return True if the last Jenkins buidl was successfull, else raise an Exception.
+
+        Raises:
+            ValueError: If their is no build number found in Jenkins.
+            Exception: If the build failed.
+            RequestException: If an error related to the Jenkins API occurs.
+        """
         try:
             # Step 1.1: Get the latest build number from the job API
             job_url = f"{JENKINS_URL}/job/{JENKINS_JOB_NAME}/api/json"
@@ -110,8 +120,19 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
     
     # Step 3: Use EC2 Sensor to Check if Instance is Running
     @task
-    def check_ec2_status(instance_id: list[str]) -> bool:
-        """Check if the EC2 instance has passed both status checks."""
+    def check_ec2_status(instance_id: str) -> bool:
+        """
+        Check if the EC2 instance has passed both status checks.
+        
+        Args:
+            instance_id (str): String containing the EC2 instance ID create via the EC2CreateInstanceOperator.  
+
+        Returns:
+            bool: Return True if the EC2 instance is created, else retry.
+
+        Raises:
+            Exception: If an error related to the AWS API occurs.
+        """
         try:
             ec2_client = boto3.client(
                 'ec2', 
@@ -141,8 +162,20 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
             raise Exception(f"AWS API error: {str(e)}")
 
     @task
-    def get_ec2_public_ip(instance_id: list[str]) -> str:
-        """Retrieve the EC2 instance public IP for SSH."""
+    def get_ec2_public_ip(instance_id: str) -> str:
+        """
+        Retrieve the EC2 instance public IP for SSH.
+        
+        Args:
+            instance_id (str): String containing the EC2 instance ID create via the EC2CreateInstanceOperator.  
+
+        Returns:
+            str: Return the public IP of the created EC2 instance.
+
+        Raises:
+            ValueError: If no public IP address assigned to instance.
+            Exception: If an error related to the AWS API occurs.
+        """
         try:
             ec2_client = boto3.resource(
                 'ec2', 
@@ -167,7 +200,16 @@ with DAG(dag_id="training_ec2", start_date=datetime(2025, 8, 28), schedule_inter
     
     @task
     def run_training_via_paramiko(public_ip: str) -> None:
-        """Use Paramiko to SSH into the EC2 instance and run ML training."""
+        """
+        Use Paramiko to SSH into the EC2 instance and run ML training.
+        
+        Args:
+            public_ip (str): String containing public IP of the created EC2 instance.  
+
+        Raises:
+            SSHException: If an error related to the SSH connection occurs.
+            Exception: If an error related to the training of the model occurs.
+        """
         ssh_client = paramiko.SSHClient()
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 

@@ -19,6 +19,9 @@ def _detect_data_drift(**context: Dict[str, Any]) -> str:
     """
     Detect data drift between reference and current housing prices stored in Postgres,
     create an Evidently report and dashboard run, and branch depending on the test result.
+    
+    Args:
+        **context (Dict[str, Any]): Airflow context dictionary
 
     Returns:
         "data_drift_detected" if a drift test failed, otherwise "no_data_drift_detected".
@@ -84,6 +87,12 @@ def _send_notification(**context: Dict[str, Any]) -> None:
     """
     Send an email notification when data drift is detected. Expects the dashboard URL
     to be available in XCom under key 'dashboard_url'. Logs and raises on errors.
+    
+    Args:
+        **context (Dict[str, Any]): Airflow context dictionary
+        
+    Raises:
+        Exception: re-raises unexpected exceptions after logging and pushing error info to XCom.
     """
     logger = logging.getLogger("airflow.task")
     ti = context.get("task_instance") or context.get("ti")
